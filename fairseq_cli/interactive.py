@@ -20,6 +20,7 @@ import torch
 
 from fairseq import checkpoint_utils, distributed_utils, options, tasks, utils
 from fairseq.data import encoders
+from fairseq.tokenizer import Tokenizer
 
 
 logging.basicConfig(
@@ -91,6 +92,7 @@ def main(args):
         utils.set_torch_seed(args.seed)
 
     use_cuda = torch.cuda.is_available() and not args.cpu
+    Tokenizer.build_tokenizer(args)
 
     # Setup task, e.g., translation
     task = tasks.setup_task(args)

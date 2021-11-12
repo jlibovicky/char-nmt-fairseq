@@ -23,6 +23,7 @@ from fairseq.modules import (
     FairseqDropout,
     LayerDropModuleList,
     LayerNorm,
+    LeeStyleCharProc,
     PositionalEmbedding,
     SinusoidalPositionalEmbedding,
     TransformerDecoderLayer,
@@ -186,6 +187,15 @@ class TransformerModel(FairseqEncoderDecoderModel):
         parser.add_argument("--no-embed", action="store_true", default=False,
                             help="dont use embeddings")
 
+        parser.add_argument("--lee-style", action="store_true", default=False,
+                            help="use lee-style encoder")
+        parser.add_argument("--lee-style-filters", nargs="+", type=int,
+                            default=[256, 512, 1024, 1024, 512])
+        parser.add_argument("--lee-style-highway-layers", type=int, default=2)
+        parser.add_argument("--lee-style-ff-layers", type=int, default=2)
+        parser.add_argument("--lee-style-shrink", type=int, default=3)
+        parser.add_argument("--lee-style-embed-dim", type=int, default=256)
+
         # fmt: on
 
     @classmethod
@@ -340,9 +350,26 @@ class TransformerEncoder(FairseqEncoder):
         self.padding_idx = embed_tokens.padding_idx
         self.max_source_positions = args.max_source_positions
 
-        self.embed_tokens = embed_tokens
 
         self.embed_scale = 1.0 if args.no_scale_embedding else math.sqrt(embed_dim)
+
+        self.lee_style = False
+        if args.lee_style:
+            self.lee_style = True
+            self.embed_tokens = Embedding(
+                embed_tokens.num_embeddings,
+                args.lee_style_embed_dim,
+                embed_tokens.padding_idx)
+            self.lee_encoder = LeeStyleCharProc(
+                input_dim=args.lee_style_embed_dim,
+                conv_filters=args.lee_style_filters,
+                intermediate_dim=embed_dim,
+                highway_layers=args.lee_style_highway_layers,
+                ff_layers=args.lee_style_ff_layers,
+                max_pool_window=args.lee_style_shrink,
+                dropout=args.dropout)
+        else:
+            self.embed_tokens = embed_tokens
 
         self.embed_positions = (
             PositionalEmbedding(
@@ -394,15 +421,22 @@ class TransformerEncoder(FairseqEncoder):
     def forward_embedding(self, src_tokens):
         # embed tokens and positions
         x = embed = self.embed_scale * self.embed_tokens(src_tokens)
+        encoder_padding_mask = src_tokens.eq(self.padding_idx)
+
+        if self.lee_style:
+            x, shrinked_mask = self.lee_encoder(
+                embed, 1 - encoder_padding_mask.float())
+            encoder_padding_mask = (1 - shrinked_mask).bool()
+
         if self.embed_positions is not None:
-            x = embed + self.embed_positions(src_tokens)
+            x = x + self.embed_positions(encoder_padding_mask)
         if self.layernorm_embedding is not None:
             x = self.layernorm_embedding(x)
         if not self.no_embed:
             x = self.dropout_module(x)
         if self.quant_noise is not None:
             x = self.quant_noise(x)
-        return x, embed
+        return x, embed, encoder_padding_mask
 
     def forward(self, src_tokens, src_lengths, return_all_hiddens: bool = False):
         """
@@ -426,13 +460,10 @@ class TransformerEncoder(FairseqEncoder):
                   hidden states of shape `(src_len, batch, embed_dim)`.
                   Only populated if *return_all_hiddens* is True.
         """
-        x, encoder_embedding = self.forward_embedding(src_tokens)
+        x, encoder_embedding, encoder_padding_mask = self.forward_embedding(src_tokens)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
-
-        # compute padding mask
-        encoder_padding_mask = src_tokens.eq(self.padding_idx)
 
         encoder_states = [] if return_all_hiddens else None
 

@@ -655,6 +655,16 @@ def add_generation_args(parser):
 
     # special decoding format for advanced decoding.
     group.add_argument('--decoding-format', default=None, type=str, choices=['unigram', 'ensemble', 'vote', 'dp', 'bs'])
+
+    group.add_argument("--lee-style", action="store_true", default=False,
+                       help="use lee-style encoder")
+    group.add_argument("--lee-style-filters", nargs="+", type=int,
+                       default=[256, 512, 1024, 1024, 512])
+    group.add_argument("--lee-style-highway-layers", type=int, default=2)
+    group.add_argument("--lee-style-ff-layers", type=int, default=2)
+    group.add_argument("--lee-style-shrink", type=int, default=3)
+    group.add_argument("--lee-style-embed-dim", type=int, default=256)
+
     # fmt: on
     return group
 
